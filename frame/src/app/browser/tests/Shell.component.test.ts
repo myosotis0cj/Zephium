@@ -5,6 +5,7 @@ import { page, userEvent } from "vitest/browser";
 import { flushSync } from "svelte";
 import type { SidebarNodeView } from "$shared/ipc/bindings";
 import { emitNativeEvent } from "$shared/testing/native-events";
+import { accountFixture } from "$shared/testing/account";
 import { tabFixture, revision, spaceFixture } from "$shared/testing/fixtures";
 import { tabs } from "$domain/tabs";
 import { surface } from "$domain/surface";
@@ -12,6 +13,7 @@ import Shell from "../Shell.svelte";
 
 const native = vi.hoisted(() => ({
   activate: vi.fn(async (_id: string) => ({ accepted: true, operation_id: null })),
+  accountName: null as string | null,
 }));
 
 // The new tab is drawn here as on macOS; NewTabMaterial covers Windows' caption band.
@@ -21,6 +23,15 @@ vi.mock("../WorkWorkspace.svelte", async () => await import("./StageStub.svelte"
 vi.mock("$shared/ipc/bindings", async () => {
   const { mockBindings } = await import("$shared/testing/bindings");
   return mockBindings({
+    accountGet: async () => ({
+      account: accountFixture(
+        native.accountName === null
+          ? {}
+          : { signed_in: true, name: native.accountName, email: "reader@example.com" },
+      ),
+      fault: null,
+      retry_after: null,
+    }),
     pagePermissionCardHost: async () => {},
     runCommand: async (id) => {
       emitNativeEvent("uiCommand", id);
@@ -34,6 +45,7 @@ vi.mock("$shared/ipc/bindings", async () => {
 afterEach(() => {
   surface.dispose();
   tabs.dispose();
+  native.accountName = null;
   vi.clearAllMocks();
 });
 
@@ -89,7 +101,8 @@ test("activating either Essentials list clears the sidebar selection before nati
   }
 });
 
-test("Settings takes the whole column and returns to the same web tab", async () => {
+test("Settings takes the whole column and returns to the same web tab after sign-in", async () => {
+  await page.viewport(900, 640);
   await surface.init();
   await tabs.init();
   const tab = tabFixture();
@@ -111,6 +124,20 @@ test("Settings takes the whole column and returns to the same web tab", async ()
   // Settings is the column's only content: no tab rail beside it.
   expect(screen.container.querySelector(`[data-zephium-tab-id="${tab.id}"]`)).toBeNull();
   expect(screen.container.querySelector("aside")!.style.width).not.toBe("56px");
+
+  const settings = screen.getByRole("navigation", { name: "Settings", exact: true });
+  const back = settings.getByRole("button", { name: "Back to browsing" });
+  await expect.element(settings.getByRole("button", { name: /^Sign in/u })).toBeVisible();
+  await expect.element(back).toBeInViewport({ ratio: 1 });
+
+  const accountName = "W".repeat(80);
+  native.accountName = accountName;
+  emitNativeEvent("accountChanged", { version: 1 });
+  await expect.element(settings.getByText(accountName, { exact: true })).toBeVisible();
+  await expect.element(back).toBeInViewport({ ratio: 1 });
+  await back.click();
+  await expect.poll(surface.currentPage).toBeNull();
+
   emitNativeEvent("browserReturn", { ...items, projection_revision: revision(42) });
   expect(screen.container.querySelector('[data-zephium-surface="browse"]')).not.toBeNull();
   const tabRows = () => screen.container.querySelectorAll(`[data-zephium-tab-id="${tab.id}"]`);
