@@ -131,6 +131,7 @@ fn inspect_directory(
     if attributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0
         || attributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
     {
+        eprintln!("downloads: Windows download directory is not an ordinary directory");
         return Err(DownloadError::ChangedFile);
     }
     Ok(file)
@@ -156,6 +157,7 @@ fn open_payload(path: &Path, write: bool) -> Result<File, DownloadError> {
         .map_err(io)?;
     let metadata = file.metadata().map_err(io)?;
     if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        eprintln!("downloads: Windows staging payload is not a regular file");
         return Err(DownloadError::ChangedFile);
     }
     // A downloaded payload must not expose a hard-linked pre-existing file.
@@ -166,6 +168,10 @@ fn open_payload(path: &Path, write: bool) -> Result<File, DownloadError> {
     }
     .map_err(win)?;
     if info.nNumberOfLinks != 1 {
+        eprintln!(
+            "downloads: Windows staging payload has {} hard links; expected one",
+            info.nNumberOfLinks
+        );
         return Err(DownloadError::ChangedFile);
     }
     Ok(file)
@@ -386,6 +392,7 @@ impl Destination {
         if expected_directory.is_some_and(|expected| {
             directory_identity(parent_handle).ok().as_ref() != Some(&expected)
         }) {
+            eprintln!("downloads: Windows download directory identity no longer matches");
             return Err(DownloadError::ChangedFile);
         }
         let staging_path = parent.join(format!(".zephium-download-{id}"));
@@ -420,6 +427,7 @@ impl Destination {
         // it cannot itself rename/delete the pinned directory.
         let observed = inspect_directory(&self.staging_path, false, true)?;
         if !same_node(&identity(&observed)?, &self.staging_identity) {
+            eprintln!("downloads: Windows staging directory identity no longer matches");
             return Err(DownloadError::ChangedFile);
         }
         verify_private_directory(&observed)
@@ -440,7 +448,13 @@ impl Destination {
         self.verify_namespace()?;
         let file = open_payload(&self.payload(), true)?;
         let after = identity(&file)?;
-        if !same_node(&before, &after) || before.bytes != after.bytes {
+        let identity_matches = same_node(&before, &after);
+        let size_matches = before.bytes == after.bytes;
+        if !identity_matches || !size_matches {
+            eprintln!(
+                "downloads: Windows staging payload changed during attachment checks \
+                 (identity_matches={identity_matches}, size_matches={size_matches})"
+            );
             return Err(DownloadError::ChangedFile);
         }
         verify_protection(&self.payload())?;
